@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  ChevronLeft, 
-  ChevronRight, 
   ChevronDown,
   Search, 
   X, 
@@ -32,7 +30,7 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarPanelOpen, setSidebarPanelOpen] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [selectedPanelCategory, setSelectedPanelCategory] = useState('Digital Art');
+  const [selectedPanelCategory, setSelectedPanelCategory] = useState('all');
   const [buyNow, setBuyNow] = useState(false);
   const [onAuction, setOnAuction] = useState(false);
   const [notForSale, setNotForSale] = useState(false);
@@ -62,11 +60,8 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
   const [selectedYear, setSelectedYear] = useState('all');
   const [visibleProductCount, setVisibleProductCount] = useState(25);
   const [yearFilterOpen, setYearFilterOpen] = useState(false);
-  const autoRowFrameRef = useRef(null);
-  const autoRowLastTimeRef = useRef(0);
 
   const isLoggedIn = auth && auth.user;
-  const rowRefs = useRef({});
   const yearFilterRef = useRef(null);
   const productsSectionRef = useRef(null);
 
@@ -100,6 +95,7 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
     if (listingState.active) return 'Go buy';
     if (listingState.status === 'unlinked') return 'Belum Mint';
     if (listingState.status === 'inactive') return 'Belum Listed';
+    if (listingState.status === 'error') return 'Status Listing Tidak Tersedia';
     return 'Tidak Tersedia';
   };
 
@@ -214,7 +210,7 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
           };
         } catch (error) {
           nextState[key] = {
-            status: 'inactive',
+            status: 'error',
             active: false,
             error: error?.message || 'Gagal membaca listing on-chain',
           };
@@ -266,23 +262,6 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
     }
   };
 
-  const scrollRow = (rowId, direction) => {
-    const row = rowRefs.current[rowId] || document.getElementById(rowId);
-    if (row) {
-      const scrollAmount = 340;
-      row.scrollBy({
-        left: direction === 'left' ? -scrollAmount : scrollAmount,
-        behavior: 'smooth',
-      });
-    }
-  };
-
-  const setRowRef = (rowId) => (element) => {
-    if (element) {
-      rowRefs.current[rowId] = element;
-    }
-  };
-
   const scrollToProductsSection = () => {
     if (!productsSectionRef.current) return;
     productsSectionRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -312,6 +291,25 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
     }
     return new Date().getFullYear();
   };
+
+  const getImageDimensions = (item) => ({
+    width: Number(item.image_width ?? 0),
+    height: Number(item.image_height ?? 0),
+  });
+
+  const availableCategories = [
+    { label: 'Semua Kategori', count: products.length },
+    ...Array.from(
+      products.reduce((categoryCounts, item) => {
+        const categoryName = item.kategori?.name || item.kategori;
+        if (typeof categoryName === 'string' && categoryName.trim()) {
+          categoryCounts.set(categoryName.trim(), (categoryCounts.get(categoryName.trim()) || 0) + 1);
+        }
+        return categoryCounts;
+      }, new Map()),
+      ([label, count]) => ({ label, count }),
+    ).sort((a, b) => a.label.localeCompare(b.label)),
+  ];
 
   const toggleLike = async (e, productId) => {
     e.stopPropagation();
@@ -468,10 +466,62 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
       const allowedCategories = categoryMap[effectiveCategory] || [];
       const itemCategory = item.kategori?.name?.toLowerCase() || item.kategori || '';
       
-      return matchesSearch && allowedCategories.some(cat => 
+      const matchesMainCategory = allowedCategories.some(cat => 
         cat === '' || itemCategory.includes(cat.toLowerCase())
       );
+      return matchesSearch && matchesMainCategory;
     }
+  });
+
+  if (selectedPanelCategory !== 'all') {
+    filteredProducts = filteredProducts.filter((item) => {
+      const itemCategory = item.kategori?.name || item.kategori || '';
+      return typeof itemCategory === 'string' && itemCategory.toLowerCase() === selectedPanelCategory.toLowerCase();
+    });
+  }
+
+  const missingImageDimensionsCount = filteredProducts.filter((item) => {
+    const { width, height } = getImageDimensions(item);
+    return width <= 0 || height <= 0;
+  }).length;
+  const selectedOrientations = Object.entries(orientationFilters)
+    .filter(([, isSelected]) => isSelected)
+    .map(([orientation]) => orientation);
+  const minPrice = minPol.trim() === '' ? null : Number(minPol);
+  const maxPrice = maxPol.trim() === '' ? null : Number(maxPol);
+
+  filteredProducts = filteredProducts.filter((item) => {
+    const price = Number(item.price_crypto);
+    if (minPrice !== null && Number.isFinite(minPrice) && price < minPrice) return false;
+    if (maxPrice !== null && Number.isFinite(maxPrice) && price > maxPrice) return false;
+
+    if (selectedOrientations.length > 0 || resolution !== 'all') {
+      const { width, height } = getImageDimensions(item);
+      if (width <= 0 || height <= 0) return false;
+
+      const ratio = width / height;
+      const orientationMatches = selectedOrientations.length === 0 || selectedOrientations.some((orientation) => {
+        if (orientation === 'square') return ratio >= 0.9 && ratio <= 1.1;
+        if (orientation === 'portrait') return ratio < 0.9;
+        if (orientation === 'landscape') return ratio > 1.1 && ratio < 2;
+        return orientation === 'panoramic' && ratio >= 2;
+      });
+      if (!orientationMatches) return false;
+
+      const shortSide = Math.min(width, height);
+      const longSide = Math.max(width, height);
+      if (resolution === 'hd' && (shortSide < 1080 || longSide < 1920)) return false;
+      if (resolution === 'ultra' && (shortSide < 2160 || longSide < 3840)) return false;
+    }
+
+    return true;
+  });
+
+  filteredProducts.sort((a, b) => {
+    if (sortOption === 'Harga Tertinggi') return Number(b.price_crypto || 0) - Number(a.price_crypto || 0);
+    if (sortOption === 'Harga Terendah') return Number(a.price_crypto || 0) - Number(b.price_crypto || 0);
+    if (sortOption === 'Paling Disukai') return Number(b.likes_count || 0) - Number(a.likes_count || 0);
+    return Number(b.idproduk || b.id || 0) - Number(a.idproduk || a.id || 0);
   });
 
   const availableYears = Array.from(new Set(filteredProducts.map((item) => extractProductYear(item))))
@@ -499,14 +549,6 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
     { id: 'row-image', label: '🖼️ Semua Image' },
     { id: 'row-design', label: '🎨 Design' },
     { id: 'row-art-vertical', label: '🧱 Art Vertical' },
-  ];
-
-  const panelCategories = [
-    { label: 'Digital Art', count: 1204 },
-    { label: 'Photography', count: 843 },
-    { label: '3D Object', count: 124 },
-    { label: 'Music & Audio', count: 55 },
-    { label: 'Game Items', count: 89 },
   ];
 
   const allRows = [
@@ -552,68 +594,6 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
   useEffect(() => {
     setVisibleProductCount(25);
   }, [searchQuery, activeCategory, activeImageSubCategory, selectedYear, products.length]);
-
-  useEffect(() => {
-    if (autoRowFrameRef.current) {
-      window.cancelAnimationFrame(autoRowFrameRef.current);
-      autoRowFrameRef.current = null;
-    }
-    autoRowLastTimeRef.current = 0;
-
-    const animateRows = (timestamp) => {
-      if (!autoRowLastTimeRef.current) autoRowLastTimeRef.current = timestamp;
-      const deltaMs = Math.min(timestamp - autoRowLastTimeRef.current, 34);
-      autoRowLastTimeRef.current = timestamp;
-
-      const rows = document.querySelectorAll('[data-auto-row="true"]');
-      if (!rows.length) {
-        autoRowFrameRef.current = window.requestAnimationFrame(animateRows);
-        return;
-      }
-
-      const speedPxPerSecond = 20;
-      const step = (speedPxPerSecond * deltaMs) / 1000;
-
-      rows.forEach((row) => {
-        if (!(row instanceof HTMLElement)) return;
-        if (row.matches(':hover')) return;
-
-        const maxScroll = row.scrollWidth - row.clientWidth;
-        if (maxScroll <= 0) return;
-
-        const rowIndex = Number(row.dataset.autoIndex || 0);
-        const isForward = rowIndex % 2 === 0;
-
-        if (isForward) {
-          const next = row.scrollLeft + step;
-          if (next >= maxScroll - 1) {
-            row.scrollLeft = 0;
-          } else {
-            row.scrollLeft = next;
-          }
-        } else {
-          const next = row.scrollLeft - step;
-          if (next <= 1) {
-            row.scrollLeft = maxScroll;
-          } else {
-            row.scrollLeft = next;
-          }
-        }
-      });
-
-      autoRowFrameRef.current = window.requestAnimationFrame(animateRows);
-    };
-
-    autoRowFrameRef.current = window.requestAnimationFrame(animateRows);
-
-    return () => {
-      if (autoRowFrameRef.current) {
-        window.cancelAnimationFrame(autoRowFrameRef.current);
-        autoRowFrameRef.current = null;
-      }
-      autoRowLastTimeRef.current = 0;
-    };
-  }, [activeCategory, selectedYear, visibleProducts.length, isSpecialFilter]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -945,209 +925,160 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
             <p className="text-sm text-neutral-500 mt-1">Coba kata kunci lain untuk "{searchQuery}"</p>
           </div>
         ) : (
-          <div className="flex-1 min-h-0 flex flex-col gap-6 lg:flex-row lg:overflow-hidden transition-all duration-500 ease-in-out">
-            <section className={`w-full transition-all duration-500 ease-in-out ${panelOpen ? 'lg:w-3/4' : 'lg:w-full'} flex flex-col h-full min-h-0 overflow-hidden`}>
-              <div className="flex-1 h-full min-h-0 overflow-y-auto space-y-6 pr-0 lg:pr-4" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-                {rowsToRender.map((row, rowIndex) => {
-                  // Distribusi produk ke setiap row agar tidak ada duplikat saat kategori 'all'
+          <div className="flex-1 min-h-0 flex flex-col gap-6 lg:flex-row transition-all duration-500 ease-in-out">
+            <section className={`w-full transition-all duration-500 ease-in-out ${panelOpen ? 'lg:w-3/4' : 'lg:w-full'} flex flex-col min-h-0`}>
+              <div className="flex-1 min-h-0 space-y-6 pr-0 lg:pr-4">
+                {rowsToRender.map((row) => {
                   let rowItems = visibleProducts;
 
-              if (useYearRows && row.year) {
-                rowItems = visibleProducts.filter((item) => String(extractProductYear(item)) === String(row.year));
-              }
-              
-              if (!useYearRows && activeCategory === 'all' && displayRows.length > 1) {
-                // Hitung berapa produk per row
-                const productsPerRow = Math.ceil(visibleProducts.length / displayRows.length);
-                const startIdx = rowIndex * productsPerRow;
-                rowItems = visibleProducts.slice(startIdx, startIdx + productsPerRow);
-              }
-              
-              // Untuk row dengan index ganjil, balik urutan untuk variasi visual
-              if (rowIndex % 2 === 1) {
-                rowItems = [...rowItems].reverse();
-              }
-              
-              if (isSpecialFilter) {
-                const targetList = likedProducts;
-                const tempItems = [];
-                
-                filteredProducts.forEach((art, idx) => {
-                  // For liked, check if product ID is in likedProducts
-                  if (targetList.includes(art.idproduk)) {
-                    tempItems.push({
-                      ...art,
-                      uniqueId: `${row.id}-${art.idproduk}`,
-                      computedPrice: `${art.price_crypto || 0} ${nativeSymbol}`,
-                      titleText: art.title || `Digital Art ${idx + 1}`,
-                      rowId: row.id,
-                      index: idx
-                    });
+                  if (useYearRows && row.year) {
+                    rowItems = visibleProducts.filter((item) => String(extractProductYear(item)) === String(row.year));
                   }
-                });
-                
-                rowItems = tempItems.filter((v, i, a) => a.findIndex(t => t.uniqueId === v.uniqueId) === i);
-                
-                if (rowItems.length === 0) {
-                  return (
-                    <div key={row.id} className="text-center py-12 bg-neutral-50 border border-neutral-200 rounded-xl">
-                      <p className="text-sm font-bold text-neutral-500 uppercase tracking-wider">Belum Ada Item Di Sini</p>
-                      <p className="text-xs text-neutral-400 mt-1">Gunakan ikon hati di bawah kartu produk untuk menambahkan.</p>
-                    </div>
-                  );
-                }
-              }
 
-              return (
-                <div key={row.id} className="relative pb-5 border-b border-neutral-200 last:border-none">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <h2 className="text-lg sm:text-xl font-black tracking-tight text-neutral-900 uppercase">{row.title}</h2>
-                      <p className="text-[11px] text-neutral-500 italic mt-0.5">{row.desc}</p>
-                    </div>
-                    {!isSpecialFilter && !useYearRows && (
-                      <div className="flex gap-2">
-                        <button onClick={() => scrollRow(row.id, 'left')} className="p-1.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-800 transition shadow-sm cursor-pointer">
-                          <ChevronLeft className="h-3.5 w-3.5" />
-                        </button>
-                        <button onClick={() => scrollRow(row.id, 'right')} className="p-1.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-800 transition shadow-sm cursor-pointer">
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  if (isSpecialFilter) {
+                    rowItems = filteredProducts
+                      .filter((item) => likedProducts.includes(normalizeProductId(item.idproduk ?? item.id)))
+                      .map((item, index) => ({
+                        ...item,
+                        uniqueId: `${row.id}-${item.idproduk ?? item.id}`,
+                        computedPrice: `${item.price_crypto || 0} ${nativeSymbol}`,
+                        titleText: item.title || `Digital Art ${index + 1}`,
+                        rowId: row.id,
+                        index,
+                      }));
 
-                  {(() => {
-                    const stripSize = 8;
-                    const segmentIndexes = useYearRows
-                      ? Array.from({ length: Math.ceil(rowItems.length / stripSize) }, (_, i) => i)
-                      : [0];
-
-                    return segmentIndexes.map((segmentIndex) => {
-                      const segmentId = useYearRows ? `${row.id}-strip-${segmentIndex}` : row.id;
-                      const segmentItems = useYearRows
-                        ? rowItems.slice(segmentIndex * stripSize, segmentIndex * stripSize + stripSize)
-                        : rowItems;
-
+                    if (rowItems.length === 0) {
                       return (
-                        <div key={segmentId} className={useYearRows ? 'mb-4 last:mb-0' : ''}>
-                          {useYearRows && (
-                            <div className="mb-2 flex justify-end gap-2">
-                              <button onClick={() => scrollRow(segmentId, 'left')} className="p-1.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-800 transition shadow-sm cursor-pointer">
-                                <ChevronLeft className="h-3.5 w-3.5" />
-                              </button>
-                              <button onClick={() => scrollRow(segmentId, 'right')} className="p-1.5 rounded-lg border border-neutral-300 bg-white hover:bg-neutral-50 text-neutral-800 transition shadow-sm cursor-pointer">
-                                <ChevronRight className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          )}
-
-                          <div
-                            id={segmentId}
-                            ref={setRowRef(segmentId)}
-                            data-auto-row={!isSpecialFilter ? 'true' : 'false'}
-                            data-auto-index={rowIndex * 100 + segmentIndex}
-                            className={`flex w-full gap-3 sm:gap-4 pb-3 pt-1 ${isSpecialFilter ? 'flex-wrap' : 'overflow-x-auto scrollbar-none'}`}
-                            style={!isSpecialFilter ? { scrollbarWidth: 'none', msOverflowStyle: 'none', WebkitOverflowScrolling: 'touch' } : {}}
-                          >
-                            {segmentItems.map((item, idx) => {
-                              const itemRowId = item.rowId || row.id;
-                              const itemIndex = item.index !== undefined ? item.index : idx;
-
-                              const productKey = normalizeProductId(item.idproduk ?? item.id);
-                              const uniqueId = item.uniqueId || `${itemRowId}-${productKey}`;
-                              const computedPrice = item.computedPrice || `${item.price_crypto || 0} ${nativeSymbol}`;
-                              const titleText = item.titleText || item.title || `Digital Art ${itemIndex + 1}`;
-
-                              let finalImageUrl = resolveProductImageUrl(item.image_url || item.gambar || item.nft?.metadata_url || '');
-
-                              const normalizedItemId = productKey;
-                              const isLiked = likedProducts.includes(normalizedItemId);
-                              const listingState = listingStateByProduct[productKey];
-                              const buyDisabled = !listingState || !listingState.active;
-
-                              return (
-                                <div
-                                  key={`${uniqueId}-${segmentId}-${idx}`}
-                                  className="min-w-55 max-w-55 sm:min-w-59 sm:max-w-59 bg-white border-2 border-neutral-950 p-2.5 sm:p-3 snap-start hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] hover:-translate-y-1 transition duration-300 transform shadow-md relative group flex flex-col justify-between rounded-lg"
-                                >
-                                  {/* KLIK KARTU UNTUK MEMBUKA MODAL QUICK VIEW */}
-                                  <div
-                                    onClick={() => openQuickView(item)}
-                                    className="overflow-hidden bg-neutral-100 border border-neutral-200 aspect-4/3 relative cursor-pointer"
-                                  >
-                                    <img
-                                      src={finalImageUrl}
-                                      alt={titleText}
-                                      className="w-full h-full object-cover transition duration-500 group-hover:scale-105"
-                                    />
-                                    <div className="absolute inset-0 bg-neutral-950/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                                      <span className="bg-white border-2 border-neutral-950 font-black text-[10px] px-2.5 py-1 uppercase tracking-wider shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
-                                        Detail Singkat
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-3 border-t border-neutral-200 pt-2.5 flex flex-col justify-between flex-1">
-                                    <div>
-                                      <h3 className="font-bold text-neutral-900 text-sm truncate tracking-wide">
-                                        {titleText}
-                                      </h3>
-                                      <div className="mt-1 flex items-center justify-between text-[11px] mb-2.5">
-                                        <span className="text-neutral-500 font-medium">Value</span>
-                                        <span className="text-neutral-900 font-extrabold font-mono tracking-tight">{computedPrice}</span>
-                                      </div>
-                                    </div>
-
-                                    <div className="flex items-center gap-1.5 border-t border-neutral-100 pt-2 w-full mb-1.5">
-                                      <div className="text-[11px] text-neutral-600 flex-1 truncate">
-                                        <span className="text-neutral-500">By: </span>
-                                        <span className="font-bold text-neutral-900">{item.user?.name || 'Anonymous'}</span>
-                                      </div>
-                                      <span className={`text-[10px] font-black uppercase tracking-wide ${listingState?.active ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                        {listingState?.active ? 'Listed Aktif' : getBuyStateLabel(item)}
-                                      </span>
-                                    </div>
-
-                                    <div className="flex items-center gap-1 border-t border-neutral-100 pt-2 w-full">
-                                              <button
-                                        onClick={() => navigateTo('product-detail', item)}
-                                        className="flex-1 bg-neutral-950 hover:bg-neutral-800 text-white font-black text-[10px] uppercase tracking-wider py-1.5 px-2 border-2 border-neutral-950 text-center transition cursor-pointer"
-                                      >
-                                        About➤
-                                      </button>
-                                      <button
-                                        onClick={() => handleBuyNft(item)}
-                                        className="flex-1 font-black text-[10px] uppercase tracking-wider py-1.5 px-2 border-2 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 cursor-pointer transition-transform duration-150 transform active:scale-95 active:shadow-inner"
-                                      >
-                                        Go buy
-                                      </button>
-
-                                      <button
-                                        onClick={(e) => toggleLike(e, item.idproduk ?? item.id)}
-                                        className={`p-1.5 border-2 border-neutral-950 transition cursor-pointer flex items-center justify-center h-7 w-7 shrink-0 ${isLiked ? 'bg-red-50 text-red-600 border-neutral-950' : 'bg-white text-neutral-400 hover:text-neutral-900'}`}
-                                      >
-                                        <Heart className={`h-3.5 w-3.5 ${isLiked ? 'fill-current' : ''}`} />
-                                      </button>
-                                      <button
-                                        onClick={(e) => togglePin(e, item.idproduk ?? item.id)}
-                                        className={`p-1.5 border-2 transition cursor-pointer flex items-center justify-center h-7 w-7 shrink-0 ${pinnedProducts.includes(normalizedItemId) ? 'bg-emerald-50 text-emerald-700 border-emerald-700' : 'bg-white text-neutral-400 border-neutral-950 hover:text-neutral-900'}`}
-                                        title={pinnedProducts.includes(normalizedItemId) ? 'Batal sematkan' : 'Sematkan'}
-                                      >
-                                        <Bookmark className={`h-3.5 w-3.5 ${pinnedProducts.includes(normalizedItemId) ? 'fill-current' : ''}`} />
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                        <div key={row.id} className="text-center py-12 bg-neutral-50 border border-neutral-200 rounded-xl">
+                          <p className="text-sm font-bold text-neutral-500 uppercase tracking-wider">Belum Ada Item Di Sini</p>
+                          <p className="text-xs text-neutral-400 mt-1">Gunakan ikon hati pada gambar karya untuk menambahkannya ke daftar suka.</p>
                         </div>
                       );
-                    });
-                  })()}
-                </div>
-              );
+                    }
+                  }
+
+                  return (
+                    <section key={row.id} className="relative pb-6 border-b border-neutral-200 last:border-none">
+                      <header className="mb-5">
+                        <h2 className="text-lg sm:text-xl font-black tracking-tight text-neutral-900 uppercase">{row.title}</h2>
+                        <p className="text-[11px] text-neutral-500 italic mt-0.5">{row.desc}</p>
+                      </header>
+
+                      <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-5">
+                        {rowItems.map((item, index) => {
+                          const itemRowId = item.rowId || row.id;
+                          const productKey = normalizeProductId(item.idproduk ?? item.id);
+                          const uniqueId = item.uniqueId || `${itemRowId}-${productKey}`;
+                          const titleText = item.titleText || item.title || `Digital Art ${index + 1}`;
+                          const computedPrice = item.computedPrice || `${item.price_crypto || 0} ${nativeSymbol}`;
+                          const { width: imageWidth, height: imageHeight } = getImageDimensions(item);
+                          const useTopProductInfo = imageWidth > imageHeight * 1.05;
+                          const imageUrl = resolveProductImageUrl(item.image_url || item.gambar || item.nft?.metadata_url || '');
+                          const isLiked = likedProducts.includes(productKey);
+                          const isPinned = pinnedProducts.includes(productKey);
+                          const listingState = listingStateByProduct[productKey];
+
+                          return (
+                            <article
+                              key={uniqueId}
+                              className="mb-5 inline-block w-full break-inside-avoid align-top"
+                            >
+                              <div
+                                className="group/image relative overflow-hidden rounded-xl border-2 border-neutral-950 bg-neutral-100 shadow-md transition duration-300 hover:-translate-y-1 hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]"
+                                tabIndex={0}
+                                style={{
+                                  aspectRatio: imageWidth > 0 && imageHeight > 0 ? `${imageWidth} / ${imageHeight}` : '4 / 3',
+                                }}
+                              >
+                                <img
+                                  src={imageUrl}
+                                  alt={titleText}
+                                  className="h-full w-full object-contain"
+                                />
+                                <div className="pointer-events-none absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-neutral-950/95 via-neutral-950/45 to-transparent p-3 opacity-0 transition-opacity duration-200 group-hover/image:pointer-events-auto group-hover/image:opacity-100 group-focus-within/image:pointer-events-auto group-focus-within/image:opacity-100 sm:p-4">
+                                  <div className="mb-auto flex items-start justify-between gap-2">
+                                    {useTopProductInfo && (
+                                      <div className="min-w-0 flex-1 text-white drop-shadow-sm">
+                                        <p className="truncate text-base font-black sm:text-lg">{titleText}</p>
+                                        <p className="mt-1 truncate text-xs font-semibold text-white/90">
+                                          Oleh {item.user?.name || 'Anonymous'} · {computedPrice}
+                                        </p>
+                                        {imageWidth > 0 && imageHeight > 0 && (
+                                          <p className="mt-1 text-[10px] font-mono text-white/80">
+                                            {imageWidth} × {imageHeight} px
+                                          </p>
+                                        )}
+                                      </div>
+                                    )}
+                                    <span className={`shrink-0 border border-white/70 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-white backdrop-blur-sm sm:text-[10px] ${listingState?.active ? 'bg-emerald-700/80' : listingState?.status === 'error' ? 'bg-neutral-700/80' : 'bg-amber-700/80'}`}>
+                                      {listingState?.active ? 'Listed Aktif' : getBuyStateLabel(item)}
+                                    </span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openQuickView(item);
+                                    }}
+                                    className="pointer-events-auto absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 border-2 border-white bg-neutral-950 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,0.5)] transition hover:bg-blue-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                                    aria-label={`Quick View ${titleText}`}
+                                  >
+                                    Quick View
+                                  </button>
+                                  {!useTopProductInfo && (
+                                    <div className="mb-3 text-white drop-shadow-sm">
+                                      <p className="truncate text-base font-black sm:text-lg">{titleText}</p>
+                                      <p className="mt-1 truncate text-xs font-semibold text-white/90">
+                                        Oleh {item.user?.name || 'Anonymous'} · {computedPrice}
+                                      </p>
+                                      {imageWidth > 0 && imageHeight > 0 && (
+                                        <p className="mt-1 text-[10px] font-mono text-white/80">
+                                          {imageWidth} × {imageHeight} px
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => navigateTo('product-detail', item)}
+                                      className="flex-1 border border-white bg-neutral-950 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white"
+                                    >
+                                      About
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleBuyNft(item)}
+                                      className="flex-1 border border-emerald-300 bg-emerald-600 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white"
+                                    >
+                                      Go buy
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => toggleLike(event, item.idproduk ?? item.id)}
+                                      className={`flex h-9 w-9 shrink-0 items-center justify-center border border-white ${isLiked ? 'bg-red-50 text-red-600' : 'bg-white text-neutral-500'}`}
+                                      aria-label={isLiked ? 'Batal menyukai' : 'Sukai karya'}
+                                    >
+                                      <Heart className={`h-4 w-4 ${isLiked ? 'fill-current' : ''}`} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(event) => togglePin(event, item.idproduk ?? item.id)}
+                                      className={`flex h-9 w-9 shrink-0 items-center justify-center border border-white ${isPinned ? 'bg-emerald-50 text-emerald-700' : 'bg-white text-neutral-500'}`}
+                                      title={isPinned ? 'Batal sematkan' : 'Sematkan'}
+                                      aria-label={isPinned ? 'Batal sematkan' : 'Sematkan karya'}
+                                    >
+                                      <Bookmark className={`h-4 w-4 ${isPinned ? 'fill-current' : ''}`} />
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  );
             })}
 
             {canLoadMore && (
@@ -1184,12 +1115,12 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
                 <p className="text-sm font-black uppercase tracking-wide text-neutral-900 mt-4">Kategori Utama</p>
 
                 <div className="space-y-2">
-                  {panelCategories.map((cat) => (
+                  {availableCategories.map((cat) => (
                     <button
                       key={cat.label}
                       type="button"
-                      onClick={() => setSelectedPanelCategory(cat.label)}
-                      className={`w-full flex items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${selectedPanelCategory === cat.label ? 'bg-neutral-950 text-white' : 'bg-neutral-50 text-neutral-800 hover:bg-neutral-100'}`}
+                      onClick={() => setSelectedPanelCategory(cat.label === 'Semua Kategori' ? 'all' : cat.label)}
+                      className={`w-full flex items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-semibold transition ${selectedPanelCategory === (cat.label === 'Semua Kategori' ? 'all' : cat.label) ? 'bg-neutral-950 text-white' : 'bg-neutral-50 text-neutral-800 hover:bg-neutral-100'}`}
                     >
                       <span>{cat.label}</span>
                       <span className="text-xs text-neutral-500">{cat.count}</span>
@@ -1219,21 +1150,34 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
                   <p className="text-sm font-black uppercase tracking-wide text-neutral-900">Rentang Harga</p>
                   <div className="grid grid-cols-2 gap-3">
                     <input
-                      type="text"
+                      type="number"
+                      min="0"
+                      step="any"
                       value={minPol}
                       onChange={(e) => setMinPol(e.target.value)}
-                      placeholder="Min POL"
+                      placeholder={`Min ${nativeSymbol}`}
                       className="w-full rounded-2xl border border-neutral-300 bg-neutral-50 px-4 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                     />
                     <input
-                      type="text"
+                      type="number"
+                      min="0"
+                      step="any"
                       value={maxPol}
                       onChange={(e) => setMaxPol(e.target.value)}
-                      placeholder="Max POL"
+                      placeholder={`Max ${nativeSymbol}`}
                       className="w-full rounded-2xl border border-neutral-300 bg-neutral-50 px-4 py-2 text-sm text-neutral-900 outline-none focus:border-neutral-900 focus:ring-1 focus:ring-neutral-900"
                     />
                   </div>
-                  <button type="button" className="w-full rounded-2xl bg-neutral-950 py-3 text-sm font-black uppercase tracking-wider text-white transition hover:bg-neutral-800">Terapkan Harga</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      scrollToProductsSection();
+                      setPanelOpen(false);
+                    }}
+                    className="w-full rounded-2xl bg-neutral-950 py-3 text-sm font-black uppercase tracking-wider text-white transition hover:bg-neutral-800"
+                  >
+                    Terapkan Harga
+                  </button>
                 </div>
 
                 <div className="space-y-4 pb-4 border-b border-neutral-200">
@@ -1288,6 +1232,11 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
                       <span>Ultra HD / Print Ready (4K+)</span>
                     </label>
                   </div>
+                  {(selectedOrientations.length > 0 || resolution !== 'all') && missingImageDimensionsCount > 0 && (
+                    <p className="border border-amber-200 bg-amber-50 p-2 text-xs leading-5 text-amber-800">
+                      {missingImageDimensionsCount} karya belum memiliki metadata ukuran, sehingga tidak masuk hasil filter orientasi/resolusi.
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-4">
@@ -1325,7 +1274,7 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
       {/* POP-UP MODAL QUICK VIEW */}
       {selectedNft && (
         <div className="fixed inset-0 z-70 bg-neutral-950/60 backdrop-blur-sm flex items-start md:items-center justify-center p-2 sm:p-4 pt-20 sm:pt-0 overflow-y-auto">
-          <div className="bg-white border-4 border-neutral-950 p-3 sm:p-5 max-w-3xl sm:max-w-xl w-full mx-2 shadow-[10px_10px_0px_0px_rgba(0,0,0,1)] relative flex flex-col md:flex-row gap-3 sm:gap-4 max-h-[calc(100vh-96px)] overflow-auto rounded-xl">
+          <div className="bg-white border-4 border-neutral-950 p-3 sm:p-5 max-w-3xl w-full mx-2 shadow-[10px_10px_0px_0px_rgba(0,0,0,1)] relative flex flex-col md:flex-row gap-3 sm:gap-4 max-h-[calc(100vh-96px)] overflow-auto rounded-xl">
             <button 
               onClick={() => {
                 setSelectedNft(null);
@@ -1346,7 +1295,7 @@ export default function ExplorationPage({ products = [], isLoading = false, prod
                   if (selectedNft.image_url || selectedNft.gambar || selectedNft.nft?.metadata_url) {
                     imgUrl = resolveProductImageUrl(selectedNft.image_url || selectedNft.gambar || selectedNft.nft?.metadata_url);
                   }
-                  return <img src={imgUrl} alt={selectedNft.title} className="w-full h-full object-cover max-h-56 sm:max-h-72" />;
+                  return <img src={imgUrl} alt={selectedNft.title} className="w-full h-full object-contain max-h-56 sm:max-h-72" />;
                 })()}
               </div>
             </div>

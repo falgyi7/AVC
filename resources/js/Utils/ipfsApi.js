@@ -1,3 +1,14 @@
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 22000) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
 export async function uploadAssetToIpfs(file, name) {
   const formData = new FormData();
   formData.append('file', file);
@@ -5,7 +16,7 @@ export async function uploadAssetToIpfs(file, name) {
     formData.append('name', name);
   }
 
-  const response = await fetch('/api/ipfs/upload-asset', {
+  const response = await fetchWithTimeout('/api/ipfs/upload-asset', {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -24,7 +35,7 @@ export async function uploadAssetToIpfs(file, name) {
 }
 
 export async function uploadMetadataToIpfs(payload) {
-  const response = await fetch('/api/ipfs/upload-metadata', {
+  const response = await fetchWithTimeout('/api/ipfs/upload-metadata', {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -44,7 +55,7 @@ export async function uploadMetadataToIpfs(payload) {
 }
 
 export async function linkNftToProduct(payload) {
-  const response = await fetch('/api/nfts/link', {
+  const response = await fetchWithTimeout('/api/nfts/link', {
     method: 'POST',
     credentials: 'include',
     headers: {

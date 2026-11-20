@@ -24,6 +24,8 @@ class Produk extends Model
         'deskripsi',
         'price_crypto',
         'image_url',
+        'image_width',
+        'image_height',
         'voice_script',
         'kategori_idkategori',
         'user_idUser',
@@ -65,5 +67,10 @@ class Produk extends Model
             'produk_idproduk',
             'user_idUser'
         );
+    }
+
+    public function likes()
+    {
+        return $this->hasMany(Like::class, 'produk_idproduk', 'idproduk');
     }
 }

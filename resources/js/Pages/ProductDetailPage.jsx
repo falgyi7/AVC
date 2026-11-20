@@ -144,7 +144,7 @@ export default function ProductDetailPage({ product, navigateTo, auth, onProduct
       } catch (error) {
         if (!cancelled) {
           setListingState({
-            status: 'inactive',
+            status: 'error',
             active: false,
             error: error?.message || 'Gagal membaca listing on-chain',
           });
@@ -514,10 +514,10 @@ export default function ProductDetailPage({ product, navigateTo, auth, onProduct
                     disabled={isBuying || !listingState?.active}
                     className={`w-full font-black text-xs uppercase tracking-widest py-3 border-2 transition shadow-[4px_4px_0px_0px_rgba(0,0,0,0.15)] ${(isBuying || !listingState?.active) ? 'bg-neutral-200 border-neutral-300 text-neutral-500 cursor-not-allowed' : 'bg-neutral-950 hover:bg-neutral-800 text-white border-neutral-950 cursor-pointer'}`}
                 >
-                  {isBuying ? 'Memproses...' : listingState?.active ? 'Beli Sekarang' : listingState?.status === 'unlinked' ? 'Belum Mint' : 'Belum Listed'}
+                  {isBuying ? 'Memproses...' : listingState?.active ? 'Beli Sekarang' : listingState?.status === 'unlinked' ? 'Belum Mint' : listingState?.status === 'error' ? 'Status Listing Tidak Tersedia' : 'Belum Listed'}
                 </button>
                 <div className="flex items-center gap-1 text-[11px] text-neutral-500 font-medium px-2 justify-center sm:justify-start">
-                  <Info className="h-3.5 w-3.5 text-neutral-400 shrink-0" /> { !auth?.user ? 'Login diperlukan untuk membeli. Tampilan listing tetap publik.' : (listingState?.active ? 'Transaksi diamankan secara kriptografis via smart contract.' : 'Buy dinonaktifkan sampai listing on-chain token ini benar-benar aktif.') }
+                  <Info className="h-3.5 w-3.5 text-neutral-400 shrink-0" /> { !auth?.user ? 'Login diperlukan untuk membeli. Tampilan listing tetap publik.' : (listingState?.active ? 'Transaksi diamankan secara kriptografis via smart contract.' : listingState?.status === 'error' ? 'Status listing gagal dibaca dari jaringan. Coba muat ulang halaman.' : 'Buy dinonaktifkan sampai listing on-chain token ini benar-benar aktif.') }
                 </div>
               </div>
             </div>

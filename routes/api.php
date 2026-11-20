@@ -3,6 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\CommunityPostController;
 use App\Http\Controllers\Api\IpfsController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\NftController;
@@ -25,6 +26,8 @@ Route::get('/produk', [ProdukController::class, 'index']);
 // PERBAIKAN: Tambah validasi angka agar tidak bentrok dengan endpoint lain
 Route::get('/produk/{id}', [ProdukController::class, 'show'])->where('id', '[0-9]+');
 Route::get('/kategori', fn() => response()->json(Kategori::all()));
+Route::get('/community/posts', [CommunityPostController::class, 'index']);
+Route::get('/community/posts/{post}/comments', [CommunityPostController::class, 'comments'])->whereNumber('post');
 
 // Check current user (dapat diakses baik login maupun tidak)
 Route::get('/me', function (Request $request) {
@@ -158,6 +161,11 @@ Route::get('/debug/conversations/{userId}', function($userId) {
 
 // 2. PROTECTED ROUTES (Wajib Login / Punya Cookie Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
+
+    // Community posts are public to read and require login to publish.
+    Route::post('/community/posts', [CommunityPostController::class, 'store']);
+    Route::post('/community/posts/sync', [CommunityPostController::class, 'syncLegacy']);
+    Route::post('/community/posts/{post}/comments', [CommunityPostController::class, 'storeComment'])->whereNumber('post');
     
     // User Info (Sinkronisasi React)
     Route::get('/user', function (Request $request) {

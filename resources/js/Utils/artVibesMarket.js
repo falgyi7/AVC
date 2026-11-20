@@ -5,7 +5,7 @@ const DEFAULT_CHAIN_ID = 137; // Polygon Mainnet
 let activeProvider = null; // Menyimpan provider yang sedang aktif (Injected atau WalletConnect)
 
 const CHAIN_METADATA = {
-  137: { name: 'Polygon Mainnet', symbol: 'POL', explorer: 'https://polygonscan.com', rpcUrl: 'https://polygon-rpc.com', isTestnet: false },
+  137: { name: 'Polygon Mainnet', symbol: 'POL', explorer: 'https://polygonscan.com', rpcUrl: 'https://polygon-bor-rpc.publicnode.com', isTestnet: false },
   1: { name: 'Ethereum Mainnet', symbol: 'ETH', explorer: 'https://etherscan.io', isTestnet: false },
   11155111: { name: 'Ethereum Sepolia Testnet', symbol: 'ETH', explorer: 'https://sepolia.etherscan.io', isTestnet: true },
   10143: { name: 'Monad Testnet', symbol: 'MON', explorer: 'https://testnet.monadexplorer.com', isTestnet: true },
@@ -189,20 +189,14 @@ export async function getMarketContractWithSigner(expectedChainId) {
 }
 
 export async function getMarketContractReadOnly() {
-  let provider;
-  const ethereumProvider = getEthereumProvider();
-
-  if (ethereumProvider) {
-    provider = new ethers.BrowserProvider(ethereumProvider);
-  } else {
-    const rpcUrl = getConfiguredChainMetadata().rpcUrl;
-    if (!rpcUrl) {
-      throw new Error('RPC URL untuk read-only provider tidak tersedia.');
-    }
-    provider = new ethers.JsonRpcProvider(rpcUrl);
+  const chainId = getConfiguredChainId();
+  const rpcUrl = getConfiguredChainMetadata().rpcUrl;
+  if (!rpcUrl) {
+    throw new Error('RPC URL untuk read-only provider tidak tersedia.');
   }
 
-  const contractAddress = getConfiguredAddress();
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const contractAddress = getConfiguredAddress(chainId);
   const contract = new ethers.Contract(contractAddress, ART_VIBES_MARKET_ABI, provider);
 
   return { provider, contractAddress, contract };

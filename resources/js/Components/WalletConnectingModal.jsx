@@ -2,8 +2,8 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Loader, CheckCircle, AlertCircle } from 'lucide-react';
 
-export default function WalletConnectingModal({ isOpen, status = 'connecting', message = 'Menghubungkan wallet...', details = '' }) {
-  // Status: 'connecting', 'signing', 'verifying', 'success', 'error'
+export default function WalletConnectingModal({ isOpen, status = 'connecting', message = 'Menghubungkan wallet...', details = '', embedded = false }) {
+  // Status: 'connecting', 'signing', 'verifying', 'processing', 'success', 'error'
   
   const getStatusConfig = () => {
     const configs = {
@@ -25,6 +25,13 @@ export default function WalletConnectingModal({ isOpen, status = 'connecting', m
         icon: Loader,
         title: 'Verifikasi',
         subtitle: 'Memverifikasi signature...',
+        color: 'from-purple-500 to-purple-600',
+        animation: 'spin',
+      },
+      processing: {
+        icon: Loader,
+        title: 'Memproses Karya',
+        subtitle: 'Mengunggah dan menyiapkan karya Anda...',
         color: 'from-purple-500 to-purple-600',
         animation: 'spin',
       },
@@ -52,14 +59,16 @@ export default function WalletConnectingModal({ isOpen, status = 'connecting', m
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4">
+        <div className={embedded ? 'relative flex w-full items-center justify-center' : 'fixed inset-0 z-[110] flex items-center justify-center p-4'}>
           {/* BACKDROP */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-slate-950/80 backdrop-blur-md pointer-events-none"
-          />
+          {!embedded && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-md pointer-events-none"
+            />
+          )}
 
           {/* MODAL CONTENT - MINIMAL & ELEGANT */}
           <motion.div
@@ -160,7 +169,7 @@ export default function WalletConnectingModal({ isOpen, status = 'connecting', m
 
             {/* HELPER TEXT */}
             <p className="text-center text-[11px] text-slate-500 mt-4 px-2">
-              {status === 'signing' && 'Jangan tutup atau refresh halaman ini'}
+              {['signing', 'processing'].includes(status) && 'Jangan tutup atau refresh halaman ini'}
               {status === 'error' && 'Silakan coba lagi atau gunakan wallet lain'}
               {status === 'success' && 'Mengalihkan ke halaman berikutnya...'}
             </p>

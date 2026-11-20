@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { LayoutDashboard, Compass, User, PlusCircle } from 'lucide-react';
+import { LayoutDashboard, Compass, User, Users, PlusCircle } from 'lucide-react';
 
 export default function Sidebar({
   sidebarOpen,
@@ -15,6 +15,7 @@ export default function Sidebar({
   const globalMenu = [
     { id: 'marketplace', label: 'Beranda Utama', desc: 'Landing page galeri', icon: LayoutDashboard },
     { id: 'explore', label: 'Eksplorasi Karya', desc: 'Jelajahi seni & item game', icon: Compass },
+    { id: 'community', label: 'Community', desc: 'Forum komunitas kreator', icon: Users },
     { id: 'dashboard', label: 'Profil Saya', desc: 'Koleksi & dompet digital', icon: User },
   ];
 

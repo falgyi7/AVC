@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ethers } from 'ethers';
-import { Mail, Lock, ArrowRight, X, ShieldCheck, Plus, MessageSquare, Trash2, Edit3, DollarSign, Bell, Heart, ChevronDown, Music2, Video } from 'lucide-react';
+import { Mail, Lock, ArrowRight, X, ShieldCheck, Plus, MessageSquare, Trash2, Edit3, DollarSign, Bell, Heart, ChevronDown, Music2, Video, Users, Send } from 'lucide-react';
 import ChatSidebar from '../Components/ChatSidebar';
+import WalletConnectingModal from '../Components/WalletConnectingModal';
 import DashboardActivityPage from './DashboardActivityPage';
 import { uploadAssetToIpfs, uploadMetadataToIpfs, linkNftToProduct } from '../Utils/ipfsApi';
 import { getConfiguredChainId, mintNftOnChain, listTokenOnChain, updateListingPriceOnChain, cancelListingOnChain, getNativeCurrencySymbol } from '../Utils/artVibesMarket';
+import { publishCommunityPost } from '../Utils/communityPosts';
 
 const createEmptyFinanceAnalytics = () => ({
   months: Array.from({ length: 12 }, (_, index) => ({ label: `Tx ${index + 1}`, value: 0 })),
@@ -17,6 +19,13 @@ const createEmptyFinanceAnalytics = () => ({
   },
   recent: [],
 });
+
+const getCommunityProductImage = (product) => {
+  const image = product?.image_url || product?.gambar || product?.image || '';
+  if (!image) return 'https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=400&q=80';
+  if (/^(https?:|data:)/i.test(image) || image.startsWith('/')) return image;
+  return `/storage/${image}`;
+};
 
 export default function ProfileDashboard({ 
   navigateTo, 
@@ -53,7 +62,7 @@ export default function ProfileDashboard({
 
   // Chain networks yang tersedia untuk mint
   const CHAIN_OPTIONS = [
-    { id: 137,     name: 'Polygon Mainnet',          symbol: 'POL',  short: 'Polygon',  hexId: '0x89',    rpc: 'https://polygon-rpc.com',            explorer: 'https://polygonscan.com',      testnet: false, logoBg: 'bg-violet-100', logoText: 'text-violet-700' },
+    { id: 137,     name: 'Polygon Mainnet',          symbol: 'POL',  short: 'Polygon',  hexId: '0x89',    rpc: 'https://polygon-bor-rpc.publicnode.com', explorer: 'https://polygonscan.com',      testnet: false, logoBg: 'bg-violet-100', logoText: 'text-violet-700' },
     { id: 1,       name: 'Ethereum Mainnet',         symbol: 'ETH',  short: 'Ethereum', hexId: '0x1',     rpc: '',                                    explorer: 'https://etherscan.io',          testnet: false, logoBg: 'bg-slate-100',  logoText: 'text-slate-700' },
     { id: 11155111,name: 'Ethereum Sepolia (Testnet)', symbol:'ETH', short: 'Ethereum', hexId: '0xaa36a7',rpc: 'https://rpc.sepolia.org',             explorer: 'https://sepolia.etherscan.io', testnet: true,  logoBg: 'bg-slate-100',  logoText: 'text-slate-700' },
     { id: 10143,   name: 'Monad Testnet',            symbol: 'MON',  short: 'Monad',    hexId: '0x279f',  rpc: 'https://testnet-rpc.monad.xyz',      explorer: 'https://testnet.monadexplorer.com', testnet: true, logoBg: 'bg-fuchsia-100', logoText: 'text-fuchsia-700' },
@@ -74,6 +83,7 @@ export default function ProfileDashboard({
   const [walletNativeBalance, setWalletNativeBalance] = useState(null);
   const [walletUsdBalance, setWalletUsdBalance] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [mintProgressLabel, setMintProgressLabel] = useState('');
   const [editingProduct, setEditingProduct] = useState(null);
   const [submitError, setSubmitError] = useState('');
   const [submitSuccess, setSubmitSuccess] = useState(false);
@@ -84,6 +94,12 @@ export default function ProfileDashboard({
   const [showCollectionSortMenu, setShowCollectionSortMenu] = useState(false);
   const [collectionSortMenuPosition, setCollectionSortMenuPosition] = useState({ top: 0, left: 0 });
   const [activePanelAction, setActivePanelAction] = useState('add-art');
+  const [isCommunityProfileOpen, setIsCommunityProfileOpen] = useState(false);
+  const [communityPostText, setCommunityPostText] = useState('');
+  const [communityProductId, setCommunityProductId] = useState('');
+  const [communityPostError, setCommunityPostError] = useState('');
+  const [communityPostSuccess, setCommunityPostSuccess] = useState(false);
+  const [communityPostSubmitting, setCommunityPostSubmitting] = useState(false);
   const productSortMenuRef = useRef(null);
   const productSortTriggerRef = useRef(null);
   const productSortDropdownRef = useRef(null);
@@ -672,6 +688,64 @@ export default function ProfileDashboard({
     setIsModalOpen(true);
   };
 
+  const requestWithTimeout = (requestPromiseFactory, timeoutMs, fallbackMessage) =>
+    Promise.race([
+      requestPromiseFactory(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(fallbackMessage)), timeoutMs)),
+    ]);
+
+  const ensureWalletChainForMint = async (chosenChain) => {
+    if (!chosenChain || typeof window === 'undefined' || !window.ethereum?.request) {
+      return { ok: true, skipped: true };
+    }
+
+    const request = (method, params = []) => window.ethereum.request({ method, params });
+
+    try {
+      const currentChainId = await requestWithTimeout(
+        () => request('eth_chainId'),
+        5000,
+        'Memeriksa chain wallet terlalu lama'
+      );
+
+      if (String(currentChainId).toLowerCase() === String(chosenChain.hexId).toLowerCase()) {
+        return { ok: true, skipped: true };
+      }
+
+      try {
+        await requestWithTimeout(
+          () => request('wallet_switchEthereumChain', [{ chainId: chosenChain.hexId }]),
+          8000,
+          'Switch chain ke wallet terlalu lama'
+        );
+        return { ok: true, switched: true };
+      } catch (switchErr) {
+        if (switchErr?.code === 4902 && chosenChain.rpc) {
+          try {
+            await requestWithTimeout(
+              () => request('wallet_addEthereumChain', [{
+                chainId: chosenChain.hexId,
+                chainName: chosenChain.name,
+                nativeCurrency: { name: chosenChain.symbol, symbol: chosenChain.symbol, decimals: 18 },
+                rpcUrls: [chosenChain.rpc],
+                blockExplorerUrls: [chosenChain.explorer],
+              }]),
+              8000,
+              'Menambahkan chain ke wallet terlalu lama'
+            );
+            return { ok: true, switched: true };
+          } catch (addErr) {
+            return { ok: true, skipped: true, warning: addErr.message };
+          }
+        }
+
+        return { ok: true, skipped: true, warning: switchErr.message };
+      }
+    } catch (chainErr) {
+      return { ok: true, skipped: true, warning: chainErr.message };
+    }
+  };
+
   // ------------------------------------------------------------------
   // 🛠️ PERBAIKAN LOGIKA HANDLE SUBMIT PRODUK DI SINI
   // ------------------------------------------------------------------
@@ -685,6 +759,7 @@ export default function ProfileDashboard({
     setSubmitError('');
     setSubmitSuccess(false);
     setUploading(true);
+    setMintProgressLabel(editingProduct ? 'Memperbarui karya...' : 'Menyiapkan transaksi mint...');
 
     const formData = new FormData();
     formData.append('title', newTitle);
@@ -729,6 +804,118 @@ export default function ProfileDashboard({
         requestHeaders['Authorization'] = `Bearer ${auth.token}`;
       }
 
+      if (!isUpdate) {
+        if (!selectedImage) {
+          throw new Error('Pilih gambar karya terlebih dahulu.');
+        }
+
+        const chosenChain = CHAIN_OPTIONS.find((chain) => chain.id === selectedChain);
+        if (chosenChain) {
+          setMintProgressLabel('Menyiapkan jaringan wallet...');
+          const chainCheck = await ensureWalletChainForMint(chosenChain);
+          if (chainCheck.warning) {
+            setNotifications((prev) => [
+              { id: Date.now(), text: `Wallet tidak bisa berganti chain cepat: ${chainCheck.warning}`, type: 'warning', read: false },
+              ...prev,
+            ]);
+          }
+        }
+
+        setMintProgressLabel('Mengunggah karya ke IPFS...');
+        const assetUpload = await uploadAssetToIpfs(selectedImage, newTitle);
+
+        setMintProgressLabel('Membuat metadata NFT...');
+        const metadataUpload = await uploadMetadataToIpfs({
+          name: newTitle,
+          description: newDesc || '',
+          image_cid: assetUpload.cid,
+          attributes: [
+            { trait_type: 'category_id', value: String(newCategory) },
+            { trait_type: 'status', value: String(newStatus) },
+            { trait_type: 'chain_id', value: String(selectedChain) },
+            { trait_type: 'chain_name', value: chosenChain?.name ?? 'unknown' },
+          ],
+        });
+
+        const shouldListOnMint = String(newStatus || '').toLowerCase() === 'listing';
+        setMintProgressLabel('Konfirmasi transaksi mint di MetaMask...');
+        const mintResult = await mintNftOnChain(metadataUpload.ipfs_uri, newPrice, shouldListOnMint, selectedChain);
+
+        setMintProgressLabel('Menyimpan karya...');
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: requestHeaders,
+          body: formData,
+        });
+
+        let data;
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error(`NFT sudah di-mint, tetapi server tidak merespons JSON. Hash transaksi: ${mintResult.txHash}`);
+        }
+
+        if (!response.ok) {
+          const message = data.message || 'Gagal menyimpan karya ke server.';
+          throw new Error(`NFT sudah di-mint, tetapi karya gagal disimpan: ${message} Hash transaksi: ${mintResult.txHash}`);
+        }
+
+        const savedProduct = data.produk || data.data || data;
+        if (!savedProduct?.idproduk) {
+          throw new Error(`NFT sudah di-mint, tetapi ID karya tidak diterima dari server. Hash transaksi: ${mintResult.txHash}`);
+        }
+
+        setMintProgressLabel('Menyinkronkan NFT dengan karya...');
+        let linkedNftResponse;
+        try {
+          linkedNftResponse = await linkNftToProduct({
+            produk_idproduk: savedProduct.idproduk,
+            token_id: String(mintResult.tokenId ?? ''),
+            contract_address: mintResult.contractAddress,
+            metadata_url: metadataUpload.ipfs_uri,
+          });
+        } catch (linkError) {
+          if (typeof onProductAdded === 'function') {
+            onProductAdded(savedProduct);
+          }
+          throw new Error(`NFT sudah di-mint dan karya tersimpan, tetapi sinkronisasi gagal: ${linkError.message} Hash transaksi: ${mintResult.txHash}`);
+        }
+        const updatedProduct = {
+          ...savedProduct,
+          nft: linkedNftResponse?.nft || {
+            token_id: String(mintResult.tokenId ?? ''),
+            contract_address: mintResult.contractAddress,
+            metadata_url: metadataUpload.ipfs_uri,
+            produk_idproduk: savedProduct.idproduk,
+          },
+        };
+
+        if (typeof onProductAdded === 'function') {
+          onProductAdded(updatedProduct);
+        }
+        setNotifications((prev) => [
+          {
+            id: Date.now(),
+            text: `Karya tersimpan dan NFT berhasil di-mint${shouldListOnMint ? ' serta di-list' : ''}. Token ID: ${mintResult.tokenId ?? 'N/A'}`,
+            type: 'success',
+            read: false,
+          },
+          ...prev,
+        ]);
+        setSubmitSuccess(true);
+        setNewTitle('');
+        setNewPrice('');
+        setNewDesc('');
+        setNewVoiceScript('');
+        setNewStatus('listing');
+        setNewCategory(categories.length > 0 ? categories[0].idkategori : '');
+        setSelectedImage(null);
+        setImagePreview('');
+        setEditingProduct(null);
+        setMintProgressLabel('Mint selesai');
+        return;
+      }
+
       const response = await fetch(url, {
         method: 'POST', // WAJIB POST jika bawa file (FormData)
         headers: requestHeaders, // JANGAN set Content-Type secara manual, biar browser yang atur boundary-nya!
@@ -748,93 +935,94 @@ export default function ProfileDashboard({
         let savedProduct = data.produk || data.data || data;
 
         if (!isUpdate && selectedImage && savedProduct?.idproduk) {
-          try {
-            setNotifications([
-              { id: Date.now(), text: 'Mengunggah file ke IPFS...', type: 'info', read: false },
-              ...notifications,
-            ]);
+          const finishMintFlow = async (productToLink) => {
+            try {
+              setMintProgressLabel('Mempersiapkan mint...');
+              setNotifications((prev) => [
+                { id: Date.now(), text: 'Produk berhasil disimpan. Mint diproses di background...', type: 'info', read: false },
+                ...prev,
+              ]);
 
-            // Switch ke chain yang dipilih user sebelum mint
-            const chosenChain = CHAIN_OPTIONS.find(c => c.id === selectedChain);
-            if (chosenChain && typeof window.ethereum !== 'undefined') {
-              try {
-                await window.ethereum.request({
-                  method: 'wallet_switchEthereumChain',
-                  params: [{ chainId: chosenChain.hexId }],
-                });
-              } catch (switchErr) {
-                if (switchErr?.code === 4902 && chosenChain.rpc) {
-                  await window.ethereum.request({
-                    method: 'wallet_addEthereumChain',
-                    params: [{
-                      chainId: chosenChain.hexId,
-                      chainName: chosenChain.name,
-                      nativeCurrency: { name: chosenChain.symbol, symbol: chosenChain.symbol, decimals: 18 },
-                      rpcUrls: [chosenChain.rpc],
-                      blockExplorerUrls: [chosenChain.explorer],
-                    }],
-                  });
-                } else {
-                  throw new Error(`Gagal switch ke ${chosenChain.name}: ${switchErr?.message}`);
+              const chosenChain = CHAIN_OPTIONS.find(c => c.id === selectedChain);
+              if (chosenChain) {
+                const chainCheck = await ensureWalletChainForMint(chosenChain);
+                if (chainCheck.warning) {
+                  setNotifications((prev) => [
+                    { id: Date.now() + 10, text: `Wallet tidak bisa berganti chain cepat: ${chainCheck.warning}`, type: 'warning', read: false },
+                    ...prev,
+                  ]);
                 }
               }
-            }
 
-            const assetUpload = await uploadAssetToIpfs(selectedImage, newTitle);
-            const metadataUpload = await uploadMetadataToIpfs({
-              name: newTitle,
-              description: newDesc || '',
-              image_cid: assetUpload.cid,
-              attributes: [
-                { trait_type: 'category_id', value: String(newCategory) },
-                { trait_type: 'status', value: String(newStatus) },
-                { trait_type: 'chain_id', value: String(selectedChain) },
-                { trait_type: 'chain_name', value: chosenChain?.name ?? 'unknown' },
-              ],
-            });
+              setMintProgressLabel('Mengunggah asset ke IPFS...');
+              const assetUpload = await uploadAssetToIpfs(selectedImage, newTitle);
 
-            const shouldListOnMint = String(newStatus || '').toLowerCase() === 'listing';
-            const mintResult = await mintNftOnChain(metadataUpload.ipfs_uri, newPrice, shouldListOnMint, selectedChain);
+              setMintProgressLabel('Membuat metadata NFT...');
+              const metadataUpload = await uploadMetadataToIpfs({
+                name: newTitle,
+                description: newDesc || '',
+                image_cid: assetUpload.cid,
+                attributes: [
+                  { trait_type: 'category_id', value: String(newCategory) },
+                  { trait_type: 'status', value: String(newStatus) },
+                  { trait_type: 'chain_id', value: String(selectedChain) },
+                  { trait_type: 'chain_name', value: chosenChain?.name ?? 'unknown' },
+                ],
+              });
 
-            const linkedNftResponse = await linkNftToProduct({
-              produk_idproduk: savedProduct.idproduk,
-              token_id: String(mintResult.tokenId ?? ''),
-              contract_address: mintResult.contractAddress,
-              metadata_url: metadataUpload.ipfs_uri,
-            });
+              const shouldListOnMint = String(newStatus || '').toLowerCase() === 'listing';
+              setMintProgressLabel('Menunggu transaksi mint...');
+              const mintResult = await mintNftOnChain(metadataUpload.ipfs_uri, newPrice, shouldListOnMint, selectedChain);
 
-            savedProduct = {
-              ...savedProduct,
-              nft: linkedNftResponse?.nft || {
+              setMintProgressLabel('Sinkronisasi NFT ke produk...');
+              const linkedNftResponse = await linkNftToProduct({
+                produk_idproduk: productToLink.idproduk,
                 token_id: String(mintResult.tokenId ?? ''),
                 contract_address: mintResult.contractAddress,
                 metadata_url: metadataUpload.ipfs_uri,
-                produk_idproduk: savedProduct.idproduk,
-              },
-            };
+              });
 
-            setNotifications((prev) => [
-              {
-                id: Date.now() + 1,
-                text: `NFT on-chain berhasil di-mint${shouldListOnMint ? ' dan langsung di-list' : ''}. Token ID: ${mintResult.tokenId ?? 'N/A'}`,
-                type: 'success',
-                read: false,
-              },
-              ...prev,
-            ]);
-          } catch (chainError) {
-            console.error('On-chain mint flow error:', chainError);
-            setNotifications((prev) => [
-              {
-                id: Date.now() + 2,
-                text: `Produk tersimpan, tetapi mint on-chain gagal: ${chainError.message}`,
-                type: 'warning',
-                read: false,
-              },
-              ...prev,
-            ]);
-            alert(`Produk tersimpan, tetapi mint on-chain gagal: ${chainError.message}`);
-          }
+              const updatedProduct = {
+                ...productToLink,
+                nft: linkedNftResponse?.nft || {
+                  token_id: String(mintResult.tokenId ?? ''),
+                  contract_address: mintResult.contractAddress,
+                  metadata_url: metadataUpload.ipfs_uri,
+                  produk_idproduk: productToLink.idproduk,
+                },
+              };
+
+              setNotifications((prev) => [
+                {
+                  id: Date.now() + 1,
+                  text: `NFT on-chain berhasil di-mint${shouldListOnMint ? ' dan langsung di-list' : ''}. Token ID: ${mintResult.tokenId ?? 'N/A'}`,
+                  type: 'success',
+                  read: false,
+                },
+                ...prev,
+              ]);
+
+              if (typeof onProductAdded === 'function') {
+                onProductAdded(updatedProduct);
+              }
+
+              setMintProgressLabel('Mint selesai');
+            } catch (chainError) {
+              console.error('On-chain mint flow error:', chainError);
+              setNotifications((prev) => [
+                {
+                  id: Date.now() + 2,
+                  text: `Produk tersimpan, tetapi mint on-chain gagal: ${chainError.message}`,
+                  type: 'warning',
+                  read: false,
+                },
+                ...prev,
+              ]);
+              setMintProgressLabel('Mint gagal');
+            }
+          };
+
+          void finishMintFlow(savedProduct);
         } else if (isUpdate && editingProduct?.nft?.token_id) {
           try {
             const tokenId = editingProduct.nft.token_id;
@@ -886,17 +1074,16 @@ export default function ProfileDashboard({
               },
               ...prev,
             ]);
-            alert(`Data produk tersimpan, tapi update on-chain gagal: ${chainError.message}`);
           }
         }
         
-        if (typeof onProductAdded === 'function') {
+        if (typeof onProductAdded === 'function' && !(!isUpdate && selectedImage && savedProduct?.idproduk)) {
           onProductAdded(savedProduct);
         }
 
-        setNotifications([
-          { id: Date.now(), text: successMessage, type: "success", read: false },
-          ...notifications
+        setNotifications((prev) => [
+          { id: Date.now(), text: successMessage, type: 'success', read: false },
+          ...prev,
         ]);
 
         setSubmitSuccess(true);
@@ -909,23 +1096,22 @@ export default function ProfileDashboard({
         setSelectedImage(null);
         setImagePreview('');
         setEditingProduct(null);
-        alert(successMessage);
+        setMintProgressLabel(isUpdate ? 'Data diperbarui' : 'Produk tersimpan. Mint sedang diproses di background...');
 
       } else {
         // Perbaikan: Tangkap pesan error spesifik dari Laravel (Error 422 Validation)
         if (response.status === 422 && data.errors) {
           const errorMessages = Object.values(data.errors).flat().join('\n- ');
-          alert(`GAGAL MENYIMPAN! Cek input form Anda:\n- ${errorMessages}`);
+          setSubmitError(`GAGAL MENYIMPAN! Cek input form Anda:\n- ${errorMessages}`);
         } else {
-          alert(data.message || "Gagal menyimpan produk ke backend.");
+          setSubmitError(data.message || 'Gagal menyimpan produk ke backend.');
         }
       }
     } catch (err) {
-      console.error("Error upload produk:", err);
+      console.error('Error upload produk:', err);
       const message = err?.message || 'Terjadi error sistem saat mengunggah aset.';
       setSubmitError(message);
       setSubmitSuccess(false);
-      alert(`Terjadi error sistem: ${message}`);
     } finally {
       setUploading(false);
     }
@@ -933,7 +1119,68 @@ export default function ProfileDashboard({
 
   const unreadNotifCount = notifications.filter(n => !n.read).length;
 
+  const communityProductOptions = myProducts.map((product, index) => ({
+    id: String(product.idproduk ?? product.id ?? product.id_produk ?? `product-${index}`),
+    product,
+  }));
+  const selectedCommunityProduct = communityProductOptions.find(({ id }) => id === communityProductId)?.product;
+
+  const handleCommunityPostSubmit = async (event) => {
+    event.preventDefault();
+    const caption = communityPostText.trim();
+    if (!caption) {
+      setCommunityPostError('Tulis sesuatu sebelum mengirim posting.');
+      return;
+    }
+
+    const creatorName = auth?.user?.name || 'Kreator Art Vibes';
+    const handle = creatorName.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    setCommunityPostSubmitting(true);
+    try {
+      await publishCommunityPost({
+        id: `creator-${Date.now()}`,
+        user: creatorName,
+        handle: `@${handle || 'creator'}`,
+        time: 'Baru saja',
+        mood: 'Komunitas',
+        title: 'Postingan komunitas',
+        caption,
+        mediaType: 'text',
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        product: selectedCommunityProduct ? {
+          ...selectedCommunityProduct,
+          idproduk: selectedCommunityProduct.idproduk ?? selectedCommunityProduct.id ?? selectedCommunityProduct.id_produk,
+          nama: selectedCommunityProduct.title || selectedCommunityProduct.nama || 'Karya Kreator',
+          price_crypto: selectedCommunityProduct.price_crypto || '0',
+          image: getCommunityProductImage(selectedCommunityProduct),
+        } : null,
+      });
+      setCommunityPostText('');
+      setCommunityProductId('');
+      setCommunityPostError('');
+      setCommunityPostSuccess(true);
+    } catch (error) {
+      console.error('Gagal menyimpan posting komunitas:', error);
+      setCommunityPostError(error instanceof Error ? error.message : 'Posting komunitas gagal disimpan.');
+      setCommunityPostSuccess(false);
+    } finally {
+      setCommunityPostSubmitting(false);
+    }
+  };
+
   const sidebarActions = [
+    {
+      id: 'community-profile',
+      label: 'Profil Komunitas',
+      icon: Users,
+      onClick: () => {
+        setCommunityPostError('');
+        setCommunityPostSuccess(false);
+        setIsCommunityProfileOpen(true);
+      },
+    },
     {
       id: 'add-art',
       label: 'studio',
@@ -1117,7 +1364,13 @@ export default function ProfileDashboard({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pt-1">
         {products.map((p, idx) => (
           <div key={p.idproduk || idx} className="bg-white border-3 border-neutral-950 p-2.5 shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] flex flex-col justify-between group hover:-translate-y-1 hover:shadow-[5px_5px_0px_0px_rgba(0,0,0,1)] transition-all rounded-xl">
-            <div className="border-2 border-neutral-950 aspect-4/3 bg-neutral-100 overflow-hidden relative">
+            <div
+              className="border-2 border-neutral-950 bg-neutral-100 overflow-hidden relative"
+              style={{
+                aspectRatio: p.image_width > 0 && p.image_height > 0 ? `${p.image_width} / ${p.image_height}` : '4 / 3',
+                maxHeight: '320px',
+              }}
+            >
               <img
                 src={
                   p.image_url
@@ -1125,7 +1378,7 @@ export default function ProfileDashboard({
                     : 'https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=400&q=80'
                 }
                 alt={p.title || 'Karya'}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                className="w-full h-full object-contain transition-transform duration-300"
               />
               <span className="absolute bottom-2 right-2 border-2 border-neutral-950 bg-emerald-400 px-2 py-0.5 text-[10px] font-black text-neutral-950 uppercase tracking-wider shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]">
                 {p.status || 'listing'}
@@ -1137,6 +1390,9 @@ export default function ProfileDashboard({
                 <span className="font-mono text-xs bg-neutral-950 text-amber-400 px-1.5 py-0.5 shrink-0 font-bold">{p.price_crypto || '0'} {marketCurrencySymbol}</span>
               </div>
               <p className="text-[11px] text-neutral-500 line-clamp-1 italic">"{p.deskripsi || 'No description available.'}"</p>
+              {p.image_width > 0 && p.image_height > 0 && (
+                <p className="text-[10px] font-mono text-neutral-500">{p.image_width} × {p.image_height} px</p>
+              )}
 
               <div className="border-t-2 border-dashed border-neutral-200 pt-2 flex justify-end gap-1">
                 <button
@@ -1159,6 +1415,170 @@ export default function ProfileDashboard({
     );
   };
 
+  if (isCommunityProfileOpen) {
+    return (
+      <div className="fixed inset-0 z-[1100] min-h-dvh overflow-y-auto bg-slate-950 text-white">
+        <header className="border-b border-blue-900 bg-slate-900 px-4 py-3 md:px-8">
+          <div className="mx-auto flex max-w-7xl items-center justify-between">
+            <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-blue-300 sm:text-sm">
+              <Users className="h-4 w-4" />
+              Community Hub
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsCommunityProfileOpen(false)}
+              className="border border-blue-800 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-200 transition hover:bg-blue-950"
+            >
+              Kembali ke Studio
+            </button>
+          </div>
+        </header>
+
+        <div className="mx-auto w-full max-w-7xl px-4 py-6 md:px-8 md:py-10">
+          <div className="mb-6">
+            <p className="text-xs font-bold uppercase tracking-[0.25em] text-blue-400">Profil Kreator</p>
+            <h1 className="mt-1 text-2xl font-black tracking-tight sm:text-3xl">Bagikan ke komunitas</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+              Buat posting dari profil kreator Studio kamu dan bagikan kabar atau proses kreatif ke Community Hub.
+            </p>
+          </div>
+
+          <section aria-labelledby="studio-community-profile-title" className="grid gap-4 lg:grid-cols-[minmax(260px,0.75fr)_minmax(0,1.5fr)]">
+            <div className="border border-blue-900 bg-slate-900 p-5 md:p-6">
+              <div className="flex items-center gap-4">
+                <img
+                  src={auth?.user?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80'}
+                  alt=""
+                  className="h-16 w-16 border-2 border-blue-700 object-cover"
+                />
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-blue-300">Profil Kreator</p>
+                  <h2 id="studio-community-profile-title" className="mt-1 text-xl font-black">
+                    {auth?.user?.name || 'Kreator Art Vibes'}
+                  </h2>
+                </div>
+              </div>
+              <div className="mt-6 border-t border-blue-950 pt-4">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Bio</p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  {auth?.user?.bio || 'Bagikan kabar, proses kreatif, atau cerita terbaru ke komunitas.'}
+                </p>
+              </div>
+            </div>
+
+            <section className="border border-blue-900 bg-slate-900 p-5 md:p-6">
+              <div className="mb-5 flex items-center gap-3 border-b border-blue-950 pb-4">
+                <div className="flex h-10 w-10 items-center justify-center bg-blue-800 text-blue-100">
+                  <Send className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-black">Posting ke Community Hub</h2>
+                  <p className="text-xs text-slate-400">Bagikan cerita dan promosikan salah satu karyamu.</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleCommunityPostSubmit} className="space-y-4">
+                <div>
+                  <label htmlFor="community-post-text" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Cerita atau caption
+                  </label>
+                  <textarea
+                    id="community-post-text"
+                    value={communityPostText}
+                    onChange={(event) => {
+                      setCommunityPostText(event.target.value);
+                      setCommunityPostError('');
+                      setCommunityPostSuccess(false);
+                    }}
+                    maxLength={1000}
+                    rows={8}
+                    placeholder="Apa yang ingin kamu bagikan ke komunitas?"
+                    className="min-h-48 w-full resize-y border border-blue-900 bg-slate-950 p-4 text-sm leading-6 text-white outline-none placeholder:text-slate-500 focus:border-blue-500"
+                  />
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                    <span>Maksimal 1.000 karakter</span>
+                    <span>{communityPostText.length}/1.000</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label htmlFor="community-product" className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-slate-300">
+                    Produk untuk dipromosikan <span className="font-normal normal-case text-slate-500">(opsional)</span>
+                  </label>
+                  <select
+                    id="community-product"
+                    value={communityProductId}
+                    onChange={(event) => setCommunityProductId(event.target.value)}
+                    disabled={myProducts.length === 0}
+                    className="w-full border border-blue-900 bg-slate-950 px-3 py-3 text-sm text-white outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:text-slate-500"
+                  >
+                    <option value="">
+                      {myProducts.length > 0 ? 'Tidak memilih produk' : 'Belum ada produk di Studio'}
+                    </option>
+                    {communityProductOptions.map(({ id: productId, product }, index) => {
+                      return (
+                        <option key={productId} value={productId}>
+                          {product.title || product.nama || `Karya ${index + 1}`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {selectedCommunityProduct && (
+                    <div className="mt-2 flex items-center gap-3 border border-blue-950 bg-slate-950 p-2.5">
+                      <img
+                        src={getCommunityProductImage(selectedCommunityProduct)}
+                        alt=""
+                        className="h-14 w-14 object-cover"
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-white">
+                          {selectedCommunityProduct.title || selectedCommunityProduct.nama || 'Karya Kreator'}
+                        </p>
+                        <p className="text-xs text-blue-300">
+                          {selectedCommunityProduct.price_crypto || '0'} {marketCurrencySymbol}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {communityPostError && (
+                  <p role="alert" className="border border-red-900 bg-red-950/50 p-3 text-sm text-red-300">
+                    {communityPostError}
+                  </p>
+                )}
+                {communityPostSuccess && (
+                  <div className="flex flex-col gap-3 border border-emerald-900 bg-emerald-950/40 p-3 text-sm text-emerald-300 sm:flex-row sm:items-center sm:justify-between">
+                    <span>Posting tersimpan. Buka Community Hub untuk melihatnya.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCommunityProfileOpen(false);
+                        navigateTo('community');
+                      }}
+                      className="border border-emerald-700 px-3 py-2 font-bold text-white hover:bg-emerald-900"
+                    >
+                      Buka Community
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={!communityPostText.trim() || communityPostSubmitting}
+                  className="inline-flex w-full items-center justify-center gap-2 bg-blue-700 px-4 py-3 text-sm font-black text-white transition hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:min-w-56"
+                >
+                  <Send className="h-4 w-4" />
+                  {communityPostSubmitting ? 'Menyimpan posting...' : 'Posting ke Community'}
+                </button>
+              </form>
+            </section>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full min-h-screen overflow-x-hidden bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.12),transparent_45%),linear-gradient(180deg,#f8fafc_0%,#f1f5f9_60%,#ecfeff_100%)] text-neutral-900 flex flex-col justify-between relative selection:bg-neutral-900 selection:text-white">
       
@@ -1168,7 +1588,7 @@ export default function ProfileDashboard({
           ART VIBES CREATIVE
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col items-end gap-1.5">
           <div className="relative">
             <button 
               onClick={() => {
@@ -1194,9 +1614,11 @@ export default function ProfileDashboard({
             )}
           </div>
 
-          <span className="bg-red-600 text-white text-[10px] font-black uppercase tracking-widest px-3 py-1 border-2 border-white">
-            🔒 PANEL PRIVAT SAYA
-          </span>
+          <div>
+            <span className="bg-red-600 text-white text-[10px] font-black uppercase tracking-widest px-3 py-1 border-2 border-white">
+              🔒 PANEL PRIVAT SAYA
+            </span>
+          </div>
         </div>
       </header>
 
@@ -1233,11 +1655,12 @@ export default function ProfileDashboard({
         </aside>
 
         <div className="xl:hidden fixed inset-x-0 bottom-0 z-[49] w-full  backdrop-blur !mb-0">
-          <div className="grid grid-cols-5 gap-1 px-1 py-1 pb-[max(0.35rem,env(safe-area-inset-bottom))]">
+          <div className="grid grid-cols-6 gap-1 px-1 py-1 pb-[max(0.35rem,env(safe-area-inset-bottom))]">
             {sidebarActions.map((item) => {
               const Icon = item.icon;
               const isActive = activePanelAction === item.id;
               const mobileLabelMap = {
+                'community-profile': 'Profil',
                 'add-art': 'studio',
                 'chat': 'Chat',
                 'liked': 'Disuka',
@@ -1547,7 +1970,13 @@ export default function ProfileDashboard({
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pt-1">
               {sortedPurchasedProducts.map((p, idx) => (
                 <div key={p.idproduk || idx} className="bg-white border-3 border-neutral-950 p-2.5 shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] flex flex-col justify-between rounded-xl hover:-translate-y-1 hover:shadow-[5px_5px_0px_0px_rgba(0,0,0,1)] transition-all">
-                  <div className="border-2 border-neutral-950 aspect-4/3 bg-neutral-100 overflow-hidden relative">
+                  <div
+                    className="border-2 border-neutral-950 bg-neutral-100 overflow-hidden relative"
+                    style={{
+                      aspectRatio: p.image_width > 0 && p.image_height > 0 ? `${p.image_width} / ${p.image_height}` : '4 / 3',
+                      maxHeight: '320px',
+                    }}
+                  >
                     <img
                       src={
                         p.image_url
@@ -1555,7 +1984,7 @@ export default function ProfileDashboard({
                           : 'https://images.unsplash.com/photo-1541701494587-cb58502866ab?auto=format&fit=crop&w=400&q=80'
                       }
                       alt={p.title || 'Koleksi'}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                     <span className="absolute bottom-2 right-2 border-2 border-neutral-950 bg-amber-300 px-2 py-0.5 text-[10px] font-black text-neutral-950 uppercase tracking-wider shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]">
                       {p.status || 'unlisted'}
@@ -1837,25 +2266,14 @@ export default function ProfileDashboard({
 
       {/* POP-UP MODAL TAMBAH & EDIT KARYA */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-[1000] flex items-start justify-center overflow-y-auto bg-neutral-950/75 px-3 py-4 backdrop-blur-md sm:px-4 sm:py-6">
+        <div className={`fixed inset-0 z-[1000] flex ${uploading ? 'items-center' : 'items-start'} justify-center overflow-y-auto bg-neutral-950/75 px-3 py-4 backdrop-blur-md sm:px-4 sm:py-6`}>
           {uploading ? (
-            <div className="relative mt-12 h-48 w-48 overflow-visible">
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-20 w-20 rounded-full bg-sky-400/10 blur-2xl animate-pulse" />
-
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-5 w-5 rounded-full bg-sky-300 shadow-[0_0_22px_rgba(125,211,252,0.95)]" />
-
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-18 w-18 rounded-full border border-cyan-300/45 animate-spin [animation-duration:3.4s]">
-                <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rounded-full bg-sky-300 shadow-[0_0_12px_rgba(125,211,252,0.9)]" />
-              </div>
-
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-28 w-28 rounded-full border border-sky-400/30 animate-spin [animation-duration:5.2s] [animation-direction:reverse]">
-                <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rounded-full bg-cyan-300 shadow-[0_0_12px_rgba(103,232,249,0.9)]" />
-              </div>
-
-              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-36 w-36 rounded-full border border-blue-400/25 animate-spin [animation-duration:8s]">
-                <span className="absolute -top-1 left-1/2 -translate-x-1/2 h-2.5 w-2.5 rounded-full bg-blue-300 shadow-[0_0_14px_rgba(147,197,253,0.95)]" />
-              </div>
-            </div>
+            <WalletConnectingModal
+              isOpen
+              status="processing"
+              message={mintProgressLabel || 'Menyiapkan karya...'}
+              embedded
+            />
           ) : (
           <div className="relative my-3 w-full max-w-5xl overflow-hidden rounded-[2rem] border-4 border-neutral-950 bg-white shadow-[0_30px_90px_rgba(0,0,0,0.35)]">
             <div className="sticky top-0 z-10 border-b-4 border-neutral-950 bg-[linear-gradient(135deg,#0f172a_0%,#111827_100%)] px-4 py-3 text-white sm:px-5 sm:py-4">
@@ -2072,13 +2490,20 @@ export default function ProfileDashboard({
                     </div>
                   </div>
 
-                  <button
-                    type="submit"
-                    disabled={uploading}
-                    className="w-full bg-neutral-950 hover:bg-neutral-800 text-white font-black text-xs uppercase tracking-widest py-2.5 border-2 border-neutral-950 transition cursor-pointer shadow-[4px_4px_0px_0px_rgba(16,185,129,1)] text-center rounded-md disabled:opacity-50"
-                  >
-                    {uploading ? "SEDANG MENGUNGGAH KE SERVER..." : editingProduct ? "💾 PERBARUI ASET" : `🚀 MINT DI ${CHAIN_OPTIONS.find((c) => c.id === selectedChain)?.name?.split(' ')[0] ?? 'BLOCKCHAIN'}`}
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      type="submit"
+                      disabled={uploading}
+                      className="w-full bg-neutral-950 hover:bg-neutral-800 text-white font-black text-xs uppercase tracking-widest py-2.5 border-2 border-neutral-950 transition cursor-pointer shadow-[4px_4px_0px_0px_rgba(16,185,129,1)] text-center rounded-md disabled:opacity-50"
+                    >
+                      {uploading ? (mintProgressLabel || 'SEDANG MEMPROSES...') : editingProduct ? '💾 PERBARUI ASET' : `🚀 MINT DI ${CHAIN_OPTIONS.find((c) => c.id === selectedChain)?.name?.split(' ')[0] ?? 'BLOCKCHAIN'}`}
+                    </button>
+                    {uploading && mintProgressLabel && (
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-600">
+                        {mintProgressLabel}
+                      </p>
+                    )}
+                  </div>
                 </div>
               </form>
             )}

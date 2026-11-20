@@ -7,6 +7,8 @@ use App\Models\Nft;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class ProdukController extends Controller
 {
@@ -22,7 +24,10 @@ class ProdukController extends Controller
                 'kategori:idkategori,name', 
                 'nft:idnfts,token_id,contract_address,metadata_url,produk_idproduk'
             ])
+            ->withCount('likes')
             ->get();
+
+        $produk->each(fn (Produk $item) => $this->fillMissingImageDimensions($item));
 
         return response()->json($produk);
     }
@@ -46,6 +51,8 @@ class ProdukController extends Controller
             ->orderByDesc('idproduk')
             ->get();
 
+        $produk->each(fn (Produk $item) => $this->fillMissingImageDimensions($item));
+
         return response()->json($produk);
     }
 
@@ -62,6 +69,7 @@ class ProdukController extends Controller
         ]);
 
         if ($request->hasFile('gambar')) {
+            [$imageWidth, $imageHeight] = $this->getUploadedImageDimensions($request);
             $path = $request->file('gambar')->store('produk', 'public');
             $imagePath = $path;
         } else {
@@ -73,6 +81,8 @@ class ProdukController extends Controller
         $produk->kategori_idkategori = $request->kategori_idkategori;
         $produk->price_crypto = $request->price_crypto;
         $produk->image_url = $imagePath;
+        $produk->image_width = $imageWidth;
+        $produk->image_height = $imageHeight;
         $produk->deskripsi = $request->deskripsi;
         $produk->voice_script = $request->voice_script;
         $produk->status = $request->status ?? 'listing';
@@ -115,8 +125,11 @@ class ProdukController extends Controller
         $produk->status = $request->status;
 
         if ($request->hasFile('gambar')) {
+            [$imageWidth, $imageHeight] = $this->getUploadedImageDimensions($request);
             $path = $request->file('gambar')->store('produk', 'public');
             $produk->image_url = $path;
+            $produk->image_width = $imageWidth;
+            $produk->image_height = $imageHeight;
         }
 
         $produk->save();
@@ -135,7 +148,45 @@ class ProdukController extends Controller
     public function show($id)
     {
         $produk = Produk::with('user:idUser,name,email,avatar,bio,profile_background', 'kategori:idkategori,name', 'nft:idnfts,token_id,contract_address,metadata_url,produk_idproduk')->findOrFail($id);
+        $this->fillMissingImageDimensions($produk);
         return response()->json($produk);
+    }
+
+    private function getUploadedImageDimensions(Request $request): array
+    {
+        $dimensions = getimagesize($request->file('gambar')->getRealPath());
+        if ($dimensions === false) {
+            throw ValidationException::withMessages([
+                'gambar' => 'Dimensi gambar tidak dapat dibaca. Silakan pilih file gambar yang valid.',
+            ]);
+        }
+
+        return [(int) $dimensions[0], (int) $dimensions[1]];
+    }
+
+    private function fillMissingImageDimensions(Produk $produk): void
+    {
+        if ($produk->image_width && $produk->image_height) {
+            return;
+        }
+
+        $imagePath = $produk->image_url;
+        if (!$imagePath || preg_match('/^(https?:|data:|\/)/i', $imagePath)) {
+            return;
+        }
+
+        if (!Storage::disk('public')->exists($imagePath)) {
+            return;
+        }
+
+        $dimensions = getimagesize(Storage::disk('public')->path($imagePath));
+        if ($dimensions === false) {
+            return;
+        }
+
+        $produk->image_width = (int) $dimensions[0];
+        $produk->image_height = (int) $dimensions[1];
+        $produk->save();
     }
 
     /**

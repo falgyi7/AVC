@@ -4,6 +4,7 @@ import NFTMarketplace from './NFTMarketplace';
 import ProfileDashboard from './Pages/ProfileDashboard';
 import ProfileSettingsPage from './Pages/ProfileSettingsPage';
 import ExplorationPage from './Pages/ExplorationPage';
+import CommunityPage from './Pages/CommunityPage';
 import ProductDetailPage from './Pages/ProductDetailPage'; 
 import PublicProfile from './Pages/PublicProfile'; 
 import DashboardFinancePage from './Pages/DashboardFinancePage';
@@ -429,6 +430,7 @@ function App() {
           />
         )}
         {currentPage === 'explore' && <ExplorationPage products={products} navigateTo={handleNavigate} auth={auth} onProductPurchased={handleProductPurchased} />}
+        {currentPage === 'community' && <CommunityPage navigateTo={handleNavigate} auth={auth} />}
         {currentPage === 'product-detail' && <ProductDetailPage product={selectedProduct} navigateTo={handleNavigate} auth={auth} onProductPurchased={handleProductPurchased} />}
         {currentPage === 'public-profile' && <PublicProfile targetUser={selectedCreator} navigateTo={handleNavigate} products={products} auth={auth} />}
         {currentPage === 'dashboard-finance' && auth && (
